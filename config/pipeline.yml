@@ -1,0 +1,15 @@
+project:
+  synthetic_label: "SYNTHETIC DATA - FOR EDUCATIONAL USE ONLY"
+  random_seed: 20261030
+  business_days: 90
+  end_date: "2026-10-30"
+risk:
+  var_lookback: 60
+  var_levels: [0.95, 0.99]
+  stale_business_days: 2
+  krd_tenors_years: [2, 5, 10, 30]
+paths:
+  raw: data/raw
+  processed: data/processed
+  reports: docs
+
