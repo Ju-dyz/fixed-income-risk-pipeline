@@ -7,7 +7,8 @@ All data is synthetic.
 ## Workflow
 
 ```text
-Synthetic sources → Python ETL → Risk analytics → MySQL → Excel report
+Synthetic source feeds → Python ingestion → MySQL raw layer → SQL standardization
+→ Python risk analytics → MySQL analytics layer → Excel report
 ```
 
 The pipeline covers 90 business days, 5 portfolios, and 50 Treasuries, corporate bonds, interest-rate swaps, and MBS instruments.
@@ -29,7 +30,7 @@ requirements.txt Python dependencies
 ## Setup
 
 ```bash
-cd "/Users/jzzz/Desktop/Project/Fixed-Income Pipeline/fixed_income_risk_pipeline_project"
+cd "/Users/jzzz/Desktop/Project/fixed_income_risk_pipeline_project"
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
@@ -44,15 +45,18 @@ MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=fixed_income_risk_pipeline
 ```
 
+Run `sql/00_init_database_and_user.sql` once as a MySQL administrator. The
+pipeline then applies `01_schema.sql` and `02_transform_raw.sql` automatically.
+
 ## Run
 
-Generate files and the Excel report without loading MySQL:
+Generate files and the Excel report without loading MySQL (offline demo mode):
 
 ```bash
 .venv/bin/python -m src.pipeline --full-history
 ```
 
-Run the complete pipeline and load MySQL:
+Run the complete database-driven pipeline:
 
 ```bash
 .venv/bin/python -m src.pipeline --full-history --load-db
@@ -79,6 +83,13 @@ Create a report for one date:
 | `stress_result_daily` | Stress-test results |
 | `dq_exception` | Data-quality exceptions |
 | `pipeline_run` | Pipeline execution audit |
+
+## Processing responsibilities
+
+- Python ingests position, market, transaction, NAV, and actual P&L source feeds into auditable raw JSON tables.
+- SQL maps identifiers, removes duplicates, rejects missing quotes, flags stale data, and creates standardized calculation inputs.
+- Python calculates duration, convexity, DV01/CS01, P&L attribution, historical VaR backtesting, and stress scenarios.
+- Calculated results are upserted to MySQL before the daily Excel review report is produced.
 
 ## Output
 

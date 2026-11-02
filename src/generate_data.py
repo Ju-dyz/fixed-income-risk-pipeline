@@ -62,6 +62,16 @@ def generate(cfg):
                 positions.append(dict(business_date=d.date(),portfolio_id=p,instrument_id=r.instrument_id,quantity=qty,clean_price=price,accrued_interest=0.,market_value=mv,source_system='POS_SYS'))
                 risk.append(dict(business_date=d.date(),portfolio_id=p,instrument_id=r.instrument_id,market_value=mv,modified_duration=dur,convexity=conv,dv01=dv01,cs01=cs01,krd_2y=krd[0],krd_5y=krd[1],krd_10y=krd[2],krd_30y=krd[3]))
     mkt=pd.DataFrame(market); pos=pd.DataFrame(positions); riskdf=pd.DataFrame(risk); tx=pd.DataFrame(transactions)
+    # Independent NAV/P&L source feeds. They deliberately use portfolio names so the
+    # database standardization step must map them to stable internal identifiers.
+    nav=pos.groupby(['business_date','portfolio_id'],as_index=False).market_value.sum()
+    nav['nav']=nav['market_value']+10_000_000
+    nav=nav.drop(columns='market_value')
+    nav['portfolio']=nav['portfolio_id'].map({p:n for p,n,_ in PORTFOLIOS})
+    nav=nav[['business_date','portfolio','nav']]
+    pnl=nav.copy()
+    pnl['actual_pnl']=pnl.groupby('portfolio')['nav'].diff().fillna(0)
+    pnl=pnl[['business_date','portfolio','actual_pnl']]
     # Ground truth remains pristine.
     for name,df in [('instrument',inst),('portfolio',ports),('curve',curve_df),('market',mkt),('position',pos),('risk',riskdf),('transaction',tx)]: df.to_csv(proc/f'ground_truth_{name}.csv',index=False)
     # Source A positions: inconsistent names/IDs/timestamps and one duplicate.
@@ -77,6 +87,8 @@ def generate(cfg):
     mb=pd.concat([mb,mb.iloc[[10]]],ignore_index=True); mb.to_csv(raw/'market_source_b.csv',index=False)
     tc=tx.rename(columns={'trade_timestamp':'EXEC_TS','settlement_date':'SETTLE_DT','portfolio_id':'DESK_BOOK','instrument_id':'INTERNAL_SEC','quantity':'NOTIONAL','trade_price':'EXEC_PX'})
     tc.to_csv(raw/'transactions_source_c.csv',index=False)
+    nav.to_csv(raw/'nav_source_d.csv',index=False)
+    pnl.to_csv(raw/'pnl_source_e.csv',index=False)
     inst.to_csv(raw/'security_master.csv',index=False); ports.to_csv(raw/'portfolio_master.csv',index=False)
     return {'dates':dates,'instruments':len(inst),'positions':len(pos),'market':len(mkt)}
 

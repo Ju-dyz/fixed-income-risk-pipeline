@@ -12,6 +12,8 @@ def _read_for_date(path, business_date):
 
 def _format_workbook(workbook):
     header_fill = PatternFill("solid", fgColor="1F4E78")
+    red_fill = PatternFill("solid", fgColor="F4CCCC")
+    amber_fill = PatternFill("solid", fgColor="FFF2CC")
     color_scale = ColorScaleRule(
         start_type="min",
         start_color="F8696B",
@@ -29,6 +31,19 @@ def _format_workbook(workbook):
             sheet.column_dimensions[column[0].column_letter].width = min(width, 35)
         if sheet.max_row > 2:
             sheet.conditional_formatting.add(f"B2:B{sheet.max_row}", color_scale)
+        headers = {cell.value: cell.column for cell in sheet[1]}
+        for flag in ("pnl_95_exception", "pnl_99_exception"):
+            if flag in headers:
+                for row in range(2, sheet.max_row + 1):
+                    if sheet.cell(row, headers[flag]).value is True:
+                        sheet.cell(row, headers[flag]).fill = red_fill
+        if "severity" in headers:
+            for row in range(2, sheet.max_row + 1):
+                cell = sheet.cell(row, headers["severity"])
+                if cell.value == "ERROR":
+                    cell.fill = red_fill
+                elif cell.value == "WARNING":
+                    cell.fill = amber_fill
 
 
 def create_report(cfg, business_date=None):

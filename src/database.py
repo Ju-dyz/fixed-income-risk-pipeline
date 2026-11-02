@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 from .config import mysql_url
 
@@ -26,6 +26,9 @@ TABLE_FILES = {
 RAW_FILES = (
     ("raw_position", "positions_source_a.csv", "POS_SYS", "AsOfDate"),
     ("raw_market_data", "market_source_b.csv", "MKT_SYS", "valuation_dt"),
+    ("raw_transaction", "transactions_source_c.csv", "TRADE_SYS", "EXEC_TS"),
+    ("raw_nav", "nav_source_d.csv", "NAV_SYS", "business_date"),
+    ("raw_pnl", "pnl_source_e.csv", "PNL_SYS", "business_date"),
 )
 
 
@@ -112,6 +115,106 @@ def _finish_run(engine, run_id, status, rows_loaded=0, error=None):
                 "run_id": run_id,
             },
         )
+
+
+def _load_reference_data(connection, processed):
+    instruments = pd.read_csv(processed / "ground_truth_instrument.csv")
+    portfolios = pd.read_csv(processed / "ground_truth_portfolio.csv")
+    upsert_frame(connection, "instrument", instruments)
+    upsert_frame(connection, "portfolio", portfolios)
+
+    aliases = []
+    for row in instruments.itertuples(index=False):
+        for value in (row.instrument_id, row.cusip, row.isin):
+            aliases.append({"source_system": "ALL", "source_identifier": str(value),
+                            "instrument_id": row.instrument_id})
+    upsert_frame(connection, "identifier_alias", pd.DataFrame(aliases))
+
+    portfolio_aliases = []
+    for row in portfolios.itertuples(index=False):
+        for value in (row.portfolio_id, row.portfolio_name,
+                      row.portfolio_name.lower().replace(" ", "_")):
+            portfolio_aliases.append({"source_system": "ALL", "source_name": value,
+                                      "portfolio_id": row.portfolio_id})
+    upsert_frame(connection, "portfolio_alias", pd.DataFrame(portfolio_aliases))
+
+
+def _insert_raw_file(connection, table, path, source, run_id, date_column, business_date=None):
+    frame = pd.read_csv(path)
+    if business_date:
+        values = pd.to_datetime(frame[date_column], errors="coerce").dt.date.astype(str)
+        frame = frame[values == business_date]
+    now = datetime.now()
+    rows = [{"run_id": run_id, "source": source,
+             "payload": json.dumps(row, default=str, allow_nan=False), "ingested_at": now}
+            for row in _records(frame)]
+    if rows:
+        connection.execute(text(
+            f"INSERT INTO {table} (run_id, source_system, payload, ingested_at) "
+            "VALUES (:run_id, :source, :payload, :ingested_at)"), rows)
+    return len(rows)
+
+
+def ingest_and_standardize(cfg, business_date=None):
+    """Ingest source files unchanged, then let MySQL standardize and validate them."""
+    root = Path(cfg["root"])
+    raw = root / cfg["paths"]["raw"]
+    processed = root / cfg["paths"]["processed"]
+    engine = initialize(root)
+    run_id = _create_run(engine, business_date)
+    ingested = 0
+    try:
+        with engine.begin() as connection:
+            _load_reference_data(connection, processed)
+            for table, filename, source, date_column in RAW_FILES:
+                ingested += _insert_raw_file(connection, table, raw / filename, source,
+                                             run_id, date_column, business_date)
+            script = (root / "sql/02_transform_raw.sql").read_text(encoding="utf-8")
+            params = {"run_id": run_id, "created_at": datetime.now(),
+                      "stale_days": cfg["risk"]["stale_business_days"]}
+            for statement in script.split(";"):
+                if statement.strip():
+                    connection.execute(text(statement), params)
+        return engine, run_id, ingested
+    except Exception as exc:
+        _finish_run(engine, run_id, "FAILED", error=str(exc)[:4000])
+        raise
+
+
+def read_standardized(engine):
+    """Read only standardized calculation inputs, not the raw landing tables."""
+    names = ("position_daily", "market_data_daily", "nav_daily", "actual_pnl_daily")
+    with engine.connect() as connection:
+        return {name: pd.read_sql(text(f"SELECT * FROM {name}"), connection)
+                for name in names}
+
+
+def persist_analytics(engine, run_id, frames, ingested_rows=0):
+    tables = ("risk_metric_daily", "pnl_nav_daily", "portfolio_risk_daily",
+              "stress_result_daily")
+    loaded = 0
+    try:
+        with engine.begin() as connection:
+            for table, frame in zip(tables, frames):
+                if table in ("risk_metric_daily", "stress_result_daily") and not frame.empty:
+                    dates = sorted({str(value)[:10] for value in frame["business_date"]})
+                    connection.execute(text(f"DELETE FROM {table} WHERE business_date IN :dates")
+                                       .bindparams(bindparam("dates", expanding=True)),
+                                       {"dates": dates})
+                loaded += upsert_frame(connection, table, frame)
+        _finish_run(engine, run_id, "SUCCESS", rows_loaded=ingested_rows + loaded)
+        return loaded
+    except Exception as exc:
+        _finish_run(engine, run_id, "FAILED", error=str(exc)[:4000])
+        raise
+
+
+def read_run_exceptions(engine, run_id):
+    with engine.connect() as connection:
+        return pd.read_sql(text(
+            "SELECT business_date, dataset_name, severity, rule_code, record_key, "
+            "message, rejected_payload FROM dq_exception WHERE run_id=:run_id"),
+            connection, params={"run_id": run_id})
 
 
 def load_database(cfg, dq_exceptions, business_date=None):

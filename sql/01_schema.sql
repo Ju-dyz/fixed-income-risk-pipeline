@@ -46,6 +46,24 @@ CREATE TABLE IF NOT EXISTS raw_market_data (
   CONSTRAINT fk_rawmkt_run FOREIGN KEY (run_id) REFERENCES pipeline_run(run_id), INDEX ix_rawmkt_run (run_id)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS raw_transaction (
+  raw_id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id CHAR(36) NOT NULL, source_system VARCHAR(30) NOT NULL,
+  payload JSON NOT NULL, ingested_at DATETIME(6) NOT NULL,
+  CONSTRAINT fk_rawtx_run FOREIGN KEY (run_id) REFERENCES pipeline_run(run_id), INDEX ix_rawtx_run (run_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS raw_nav (
+  raw_id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id CHAR(36) NOT NULL, source_system VARCHAR(30) NOT NULL,
+  payload JSON NOT NULL, ingested_at DATETIME(6) NOT NULL,
+  CONSTRAINT fk_rawnav_run FOREIGN KEY (run_id) REFERENCES pipeline_run(run_id), INDEX ix_rawnav_run (run_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS raw_pnl (
+  raw_id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id CHAR(36) NOT NULL, source_system VARCHAR(30) NOT NULL,
+  payload JSON NOT NULL, ingested_at DATETIME(6) NOT NULL,
+  CONSTRAINT fk_rawpnl_run FOREIGN KEY (run_id) REFERENCES pipeline_run(run_id), INDEX ix_rawpnl_run (run_id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS position_daily (
   business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, instrument_id VARCHAR(20) NOT NULL,
   quantity DECIMAL(22,4) NOT NULL, clean_price DECIMAL(14,8) NOT NULL, accrued_interest DECIMAL(14,8) NOT NULL,
@@ -72,6 +90,18 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
   PRIMARY KEY (business_date, instrument_id),
   CONSTRAINT fk_mkt_instrument FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id),
   INDEX ix_mkt_quote_ts (quote_timestamp)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS nav_daily (
+  business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, nav DECIMAL(22,4) NOT NULL,
+  source_system VARCHAR(30) NOT NULL, PRIMARY KEY (business_date, portfolio_id),
+  CONSTRAINT fk_nav_portfolio FOREIGN KEY (portfolio_id) REFERENCES portfolio(portfolio_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS actual_pnl_daily (
+  business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, actual_pnl DECIMAL(22,4) NOT NULL,
+  source_system VARCHAR(30) NOT NULL, PRIMARY KEY (business_date, portfolio_id),
+  CONSTRAINT fk_actualpnl_portfolio FOREIGN KEY (portfolio_id) REFERENCES portfolio(portfolio_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS risk_metric_daily (
