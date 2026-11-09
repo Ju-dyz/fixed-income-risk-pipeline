@@ -32,6 +32,51 @@ RAW_FILES = (
 )
 
 
+class DatabaseClient:
+    """Manage the MySQL engine, run ID and database pipeline operations."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.engine = None
+        self.run_id = None
+        self.ingested_rows = 0
+
+    def ingest_and_standardize(self, business_date=None):
+        """Load raw files, run SQL transformations and return standardized inputs."""
+        self.engine, self.run_id, self.ingested_rows = ingest_and_standardize(
+            self.cfg, business_date
+        )
+        return self.read_standardized()
+
+    def read_standardized(self):
+        """Return calculation-ready MySQL tables as pandas DataFrames."""
+        if self.engine is None:
+            self.engine = initialize(self.cfg["root"])
+        return read_standardized(self.engine)
+
+    def begin_analytics_run(self):
+        """Create an audit run for analytics-only calculation and persistence."""
+        if self.engine is None:
+            self.engine = initialize(self.cfg["root"])
+        self.run_id = _create_run(self.engine, None, mode="ANALYTICS")
+        self.ingested_rows = 0
+        return self.run_id
+
+    def persist_analytics(self, frames):
+        """Write the four analytics outputs and finish the database run audit."""
+        if self.engine is None or self.run_id is None:
+            raise RuntimeError("Run ingest_and_standardize() before persist_analytics().")
+        return persist_analytics(
+            self.engine, self.run_id, frames, self.ingested_rows
+        )
+
+    def read_run_exceptions(self):
+        """Return data-quality exceptions for the active pipeline run."""
+        if self.engine is None or self.run_id is None:
+            raise RuntimeError("No active database pipeline run is available.")
+        return read_run_exceptions(self.engine, self.run_id)
+
+
 def _records(frame):
     """Return MySQL-safe dictionaries with pandas missing values as None."""
     return frame.astype(object).where(frame.notna(), None).to_dict("records")
@@ -62,6 +107,56 @@ def initialize(root):
         for statement in schema.split(";"):
             if statement.strip():
                 connection.exec_driver_sql(statement)
+        existing = set(connection.execute(text(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA=:database AND TABLE_NAME='pnl_nav_daily'"
+        ), {"database": database}).scalars())
+        migrations = {
+            "duration_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER carry_pnl",
+            "convexity_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER duration_pnl",
+            "trading_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER spread_pnl",
+        }
+        for column, definition in migrations.items():
+            if column not in existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE pnl_nav_daily ADD COLUMN {column} {definition}"
+                )
+        risk_existing = set(connection.execute(text(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA=:database AND TABLE_NAME='risk_metric_daily'"
+        ), {"database": database}).scalars())
+        risk_migrations = {
+            "macaulay_duration": "DECIMAL(14,8) NULL AFTER market_value",
+            "duration_type": "VARCHAR(20) NOT NULL DEFAULT 'MODIFIED' AFTER modified_duration",
+        }
+        for column, definition in risk_migrations.items():
+            if column not in risk_existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE risk_metric_daily ADD COLUMN {column} {definition}"
+                )
+        table_migrations = {
+            "portfolio_risk_daily": {
+                "realized_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER cs01",
+                "hypothetical_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER realized_pnl",
+                "residual_pnl": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER hypothetical_pnl",
+            },
+            "stress_result_daily": {
+                "nav": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER scenario_name",
+                "stress_loss": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER stress_pnl",
+                "stress_limit": "DECIMAL(22,4) NOT NULL DEFAULT 0 AFTER stress_loss",
+                "stress_limit_breach": "BOOLEAN NOT NULL DEFAULT FALSE AFTER stress_limit",
+            },
+        }
+        for table, columns in table_migrations.items():
+            existing_columns = set(connection.execute(text(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=:database AND TABLE_NAME=:table"
+            ), {"database": database, "table": table}).scalars())
+            for column, definition in columns.items():
+                if column not in existing_columns:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                    )
     return engine
 
 
@@ -80,12 +175,13 @@ def upsert_frame(connection, table, frame):
     return len(frame)
 
 
-def _create_run(engine, business_date):
+def _create_run(engine, business_date, mode=None):
+    """Create one auditable ingestion or analytics execution record."""
     run_id = str(uuid.uuid4())
     params = {
         "run_id": run_id,
         "business_date": business_date,
-        "mode": "DAILY" if business_date else "FULL",
+        "mode": mode or ("DAILY" if business_date else "FULL"),
         "started_at": datetime.now(),
     }
     with engine.begin() as connection:
@@ -183,7 +279,8 @@ def ingest_and_standardize(cfg, business_date=None):
 
 def read_standardized(engine):
     """Read only standardized calculation inputs, not the raw landing tables."""
-    names = ("position_daily", "market_data_daily", "nav_daily", "actual_pnl_daily")
+    names = ("position_daily", "market_data_daily", "transaction_daily",
+             "nav_daily", "actual_pnl_daily")
     with engine.connect() as connection:
         return {name: pd.read_sql(text(f"SELECT * FROM {name}"), connection)
                 for name in names}

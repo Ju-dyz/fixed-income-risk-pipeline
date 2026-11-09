@@ -1,7 +1,10 @@
 from pathlib import Path
 from datetime import timedelta
 import numpy as np, pandas as pd
-from .pricing import bond_metrics, key_rate_weights
+from .pricing import (
+    bond_effective_metrics, bond_metrics, key_rate_dv01,
+    swap_effective_metrics, swap_quote,
+)
 
 PORTFOLIOS = [('P01','Treasury Liquidity','Government'),('P02','Core Credit','Investment Grade'),
               ('P03','Long Duration','Liability Hedging'),('P04','Rates Macro','Rates/Swaps'),
@@ -25,6 +28,9 @@ def generate(cfg):
     root=Path(cfg['root']); raw=root/cfg['paths']['raw']; proc=root/cfg['paths']['processed']
     raw.mkdir(parents=True,exist_ok=True); proc.mkdir(parents=True,exist_ok=True)
     rng=np.random.default_rng(cfg['project']['random_seed'])
+    pricing=cfg['pricing']; bond_frequency=pricing['bond_coupon_frequency']
+    swap_frequency=pricing['irs_fixed_frequency']; swap_direction=pricing['irs_direction']
+    bump_bp=pricing['risk_bump_bp']; krd_tenors=cfg['risk']['krd_tenors_years']
     dates=pd.bdate_range(end=cfg['project']['end_date'],periods=cfg['project']['business_days'])
     inst=_instruments(rng); ports=pd.DataFrame(PORTFOLIOS,columns=['portfolio_id','portfolio_name','strategy']); ports['synthetic_flag']=True
     # Correlated level/slope/curvature shocks, then coherent tenor curves.
@@ -44,8 +50,17 @@ def generate(cfg):
             rf=float(np.interp(years,TENORS,curve[di])); spread={'UST':0,'IRS':.001,'CORP':.011,'MBS':.018}[r.instrument_type]
             spread += ((int(r.instrument_id[1:])%7)-3)*.0007 + factors[di,2]*.8
             y=max(.001,rf+spread)
-            if r.instrument_type=='IRS': price=100+(r.coupon_rate-y)*min(years,10)*90; dur=min(years,10)*.78; conv=dur**2*.55
-            else: price,dur,conv=bond_metrics(100,r.coupon_rate,y,years)
+            if r.instrument_type=='IRS':
+                mac=None; duration_type='EFFECTIVE'
+                price,dur,conv,_=swap_effective_metrics(100,r.coupon_rate,y,years,swap_frequency,swap_direction,bump_bp)
+                reprice=lambda shift: swap_quote(100,r.coupon_rate,max(y+shift,1e-8),years,swap_frequency,swap_direction)
+            elif r.instrument_type=='MBS':
+                mac=None; duration_type='EFFECTIVE'
+                price,dur,conv=bond_effective_metrics(100,r.coupon_rate,y,years,bond_frequency,bump_bp)
+                reprice=lambda shift: bond_metrics(100,r.coupon_rate,max(y+shift,1e-8),years,bond_frequency)[0]
+            else:
+                price,mac,dur,conv=bond_metrics(100,r.coupon_rate,y,years,bond_frequency); duration_type='MODIFIED'
+                reprice=lambda shift: bond_metrics(100,r.coupon_rate,max(y+shift,1e-8),years,bond_frequency)[0]
             quote_ts=d+timedelta(hours=16)
             market.append(dict(business_date=d.date(),instrument_id=r.instrument_id,price=price,yield_rate=y,spread_rate=spread,quote_timestamp=quote_ts,is_stale=False))
             for p in holdings:
@@ -54,13 +69,14 @@ def generate(cfg):
                 # sparse, coherent transactions
                 if di and rng.random()<.015:
                     trade_qty=float(rng.integers(-300,301)*1000); qty += trade_qty; holdings[p][r.instrument_id]=max(qty,0)
+                    execution_price=price*(1+float(rng.normal(0,.0008)))
                     transactions.append(dict(trade_id=f'T{len(transactions)+1:08d}',trade_timestamp=d+timedelta(hours=10,minutes=int(rng.integers(0,300))),
-                      settlement_date=(d+pd.offsets.BDay(2)).date(),portfolio_id=p,instrument_id=r.instrument_id,quantity=trade_qty,trade_price=price,source_system='TRADE_SYS'))
+                      settlement_date=(d+pd.offsets.BDay(2)).date(),portfolio_id=p,instrument_id=r.instrument_id,quantity=trade_qty,trade_price=execution_price,source_system='TRADE_SYS'))
                 qty=holdings[p][r.instrument_id]; mv=qty*price/100
                 dv01=mv*dur*.0001; cs01=dv01 if r.instrument_type in ('CORP','MBS') else 0.
-                krd=key_rate_weights(years)*dv01
+                krd=key_rate_dv01(qty,years,reprice,krd_tenors,bump_bp)
                 positions.append(dict(business_date=d.date(),portfolio_id=p,instrument_id=r.instrument_id,quantity=qty,clean_price=price,accrued_interest=0.,market_value=mv,source_system='POS_SYS'))
-                risk.append(dict(business_date=d.date(),portfolio_id=p,instrument_id=r.instrument_id,market_value=mv,modified_duration=dur,convexity=conv,dv01=dv01,cs01=cs01,krd_2y=krd[0],krd_5y=krd[1],krd_10y=krd[2],krd_30y=krd[3]))
+                risk.append(dict(business_date=d.date(),portfolio_id=p,instrument_id=r.instrument_id,market_value=mv,macaulay_duration=mac,modified_duration=dur,duration_type=duration_type,convexity=conv,dv01=dv01,cs01=cs01,krd_2y=krd[0],krd_5y=krd[1],krd_10y=krd[2],krd_30y=krd[3]))
     mkt=pd.DataFrame(market); pos=pd.DataFrame(positions); riskdf=pd.DataFrame(risk); tx=pd.DataFrame(transactions)
     # Independent NAV/P&L source feeds. They deliberately use portfolio names so the
     # database standardization step must map them to stable internal identifiers.

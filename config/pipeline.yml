@@ -8,6 +8,11 @@ risk:
   var_levels: [0.95, 0.99]
   stale_business_days: 2
   krd_tenors_years: [2, 5, 10, 30]
+pricing:
+  bond_coupon_frequency: 2
+  irs_fixed_frequency: 2
+  irs_direction: "receive_fixed"
+  risk_bump_bp: 1.0
 stress:
   scenario_name: "SVB collapse - bull steepening and volatility spike"
   rate_shocks_bp:
@@ -17,6 +22,7 @@ stress:
   volatility_end: 180
   # Educational proxy: dollar loss per volatility point for each $100mm of MBS market value.
   mbs_vega_proxy_per_100mm: 2000
+  stress_limit_pct_nav: 0.02
 paths:
   raw: data/raw
   processed: data/processed

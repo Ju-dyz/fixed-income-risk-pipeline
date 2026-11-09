@@ -22,7 +22,7 @@ data/processed/ Clean data, ground truth, and analytics output
 PROJECT_INTRO.md Architecture, table guide, conventions, and troubleshooting
 docs/           Project introduction and daily Excel report
 sql/            MySQL database, schema, and query scripts
-src/            Data generation, ETL, analytics, database, and reporting code
+src/            Data generation, SQL orchestration, analytics, validation, and reporting code
 .env            Local MySQL credentials
 requirements.txt Python dependencies
 ```
@@ -50,12 +50,6 @@ pipeline then applies `01_schema.sql` and `02_transform_raw.sql` automatically.
 
 ## Run
 
-Generate files and the Excel report without loading MySQL (offline demo mode):
-
-```bash
-.venv/bin/python -m src.pipeline --full-history
-```
-
 Run the complete database-driven pipeline:
 
 ```bash
@@ -65,8 +59,18 @@ Run the complete database-driven pipeline:
 Create a report for one date:
 
 ```bash
-.venv/bin/python -m src.pipeline --date 2026-10-30
+.venv/bin/python -m src.pipeline --date 2026-10-30 --load-db
 ```
+
+Rerun analytics from existing standardized MySQL data without re-ingesting raw files:
+
+```bash
+.venv/bin/python -m src.run_analytics --date 2026-10-30 --persist --report
+```
+
+`src/etl.py` is retained only as an offline reference implementation and is not
+called by either production command above. SQL is the authoritative
+standardization path.
 
 ## Main MySQL tables
 
@@ -89,6 +93,7 @@ Create a report for one date:
 - Python ingests position, market, transaction, NAV, and actual P&L source feeds into auditable raw JSON tables.
 - SQL maps identifiers, removes duplicates, rejects missing quotes, flags stale data, and creates standardized calculation inputs.
 - Python calculates duration, convexity, DV01/CS01, P&L attribution, historical VaR backtesting, and stress scenarios.
+- `src/var_model.py` implements classical historical simulation using 60 security-level market-shock scenarios on fixed prior-day exposures, then backtests VaR against current actual P&L; `src/stress.py` owns the named SVB stress scenario.
 - Calculated results are upserted to MySQL before the daily Excel review report is produced.
 
 ## Output
@@ -97,9 +102,10 @@ Create a report for one date:
 docs/fixed_income_risk_2026-10-30.xlsx
 ```
 
-The report contains portfolio risk, DV01/CS01, P&L attribution, VaR monitoring, stress results, and data-quality exceptions.
+The report contains portfolio risk, DV01/CS01, P&L attribution, VaR monitoring,
+stress results, pricing validation, and data-quality exceptions.
 
 ## Model scope
 
-Bond analytics use a simplified fixed-coupon, flat-YTM model. Swap, MBS, key-rate, CS01, P&L attribution, VaR, and stress calculations are educational approximations, not production pricing models.
+UST and corporate-bond risk uses discounted cash flows, Macaulay duration, modified duration, textbook convexity, and DV01. IRS risk uses fixed-leg minus floating-leg valuation with ±1bp effective-duration/convexity repricing under explicit receive-fixed and flat-curve assumptions. MBS uses ±1bp effective-duration repricing of its current synthetic cash flows; it does not include production prepayment or OAS modeling. Key-rate DV01 uses local linear curve bumps and repricing. CS01, MBS volatility, and stress calculations remain educational rather than production models.
 

@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS actual_pnl_daily (
 
 CREATE TABLE IF NOT EXISTS risk_metric_daily (
   business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, instrument_id VARCHAR(20) NOT NULL,
-  market_value DECIMAL(22,4) NOT NULL, modified_duration DECIMAL(14,8) NOT NULL,
+  market_value DECIMAL(22,4) NOT NULL, macaulay_duration DECIMAL(14,8) NULL,
+  modified_duration DECIMAL(14,8) NOT NULL, duration_type VARCHAR(20) NOT NULL,
   convexity DECIMAL(18,8) NOT NULL, dv01 DECIMAL(22,6) NOT NULL, cs01 DECIMAL(22,6) NOT NULL,
   krd_2y DECIMAL(22,6) NOT NULL, krd_5y DECIMAL(22,6) NOT NULL,
   krd_10y DECIMAL(22,6) NOT NULL, krd_30y DECIMAL(22,6) NOT NULL,
@@ -118,8 +119,10 @@ CREATE TABLE IF NOT EXISTS risk_metric_daily (
 CREATE TABLE IF NOT EXISTS pnl_nav_daily (
   business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, nav DECIMAL(22,4) NOT NULL,
   realized_pnl DECIMAL(22,4) NOT NULL, hypothetical_pnl DECIMAL(22,4) NULL,
-  carry_pnl DECIMAL(22,4) NOT NULL, rates_pnl DECIMAL(22,4) NOT NULL,
-  spread_pnl DECIMAL(22,4) NOT NULL, residual_pnl DECIMAL(22,4) NOT NULL,
+  carry_pnl DECIMAL(22,4) NOT NULL, duration_pnl DECIMAL(22,4) NOT NULL,
+  convexity_pnl DECIMAL(22,4) NOT NULL, rates_pnl DECIMAL(22,4) NOT NULL,
+  spread_pnl DECIMAL(22,4) NOT NULL, trading_pnl DECIMAL(22,4) NOT NULL,
+  residual_pnl DECIMAL(22,4) NOT NULL,
   PRIMARY KEY (business_date, portfolio_id),
   CONSTRAINT fk_pnl_portfolio FOREIGN KEY (portfolio_id) REFERENCES portfolio(portfolio_id)
 ) ENGINE=InnoDB;
@@ -127,6 +130,8 @@ CREATE TABLE IF NOT EXISTS pnl_nav_daily (
 CREATE TABLE IF NOT EXISTS portfolio_risk_daily (
   business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, nav DECIMAL(22,4) NOT NULL,
   market_value DECIMAL(22,4) NOT NULL, dv01 DECIMAL(22,6) NOT NULL, cs01 DECIMAL(22,6) NOT NULL,
+  realized_pnl DECIMAL(22,4) NOT NULL, hypothetical_pnl DECIMAL(22,4) NOT NULL,
+  residual_pnl DECIMAL(22,4) NOT NULL,
   var_95 DECIMAL(22,4) NULL, var_99 DECIMAL(22,4) NULL, pnl_95_exception BOOLEAN NULL,
   pnl_99_exception BOOLEAN NULL, PRIMARY KEY (business_date, portfolio_id),
   CONSTRAINT fk_prisk_portfolio FOREIGN KEY (portfolio_id) REFERENCES portfolio(portfolio_id)
@@ -134,7 +139,10 @@ CREATE TABLE IF NOT EXISTS portfolio_risk_daily (
 
 CREATE TABLE IF NOT EXISTS stress_result_daily (
   business_date DATE NOT NULL, portfolio_id VARCHAR(20) NOT NULL, scenario_name VARCHAR(80) NOT NULL,
-  stress_pnl DECIMAL(22,4) NOT NULL, PRIMARY KEY (business_date, portfolio_id, scenario_name),
+  nav DECIMAL(22,4) NOT NULL, stress_pnl DECIMAL(22,4) NOT NULL,
+  stress_loss DECIMAL(22,4) NOT NULL, stress_limit DECIMAL(22,4) NOT NULL,
+  stress_limit_breach BOOLEAN NOT NULL,
+  PRIMARY KEY (business_date, portfolio_id, scenario_name),
   CONSTRAINT fk_stress_portfolio FOREIGN KEY (portfolio_id) REFERENCES portfolio(portfolio_id)
 ) ENGINE=InnoDB;
 

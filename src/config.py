@@ -18,4 +18,3 @@ def mysql_url(include_db=True):
     return (f"mysql+pymysql://{quote_plus(os.environ['MYSQL_USER'])}:"
             f"{quote_plus(os.environ['MYSQL_PASSWORD'])}@{os.getenv('MYSQL_HOST','127.0.0.1')}:"
             f"{os.getenv('MYSQL_PORT','3306')}{suffix}?charset=utf8mb4")
-

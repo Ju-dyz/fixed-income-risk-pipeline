@@ -249,6 +249,17 @@ def _normalize_transactions(frame, instrument_lookup, portfolio_lookup, exceptio
     return frame[~duplicates & ~rejected][TRANSACTION_COLUMNS].copy()
 
 
+def _normalize_portfolio_measure(frame, value_column, dataset, portfolio_lookup, exceptions):
+    frame = frame.rename(columns={"portfolio": "portfolio_id"})
+    frame["business_date"] = pd.to_datetime(frame["business_date"], errors="coerce").dt.date
+    frame["portfolio_id"] = frame["portfolio_id"].map(portfolio_lookup)
+    rejected = frame[["business_date", "portfolio_id", value_column]].isna().any(axis=1)
+    for index in frame.index[rejected]:
+        _exception(exceptions, dataset, "REQUIRED_FIELD", index,
+                   f"Required {dataset} field missing after mapping", frame.loc[index])
+    return frame.loc[~rejected, ["business_date", "portfolio_id", value_column]].copy()
+
+
 def normalize(cfg):
     root = Path(cfg["root"])
     raw = root / cfg["paths"]["raw"]
@@ -278,11 +289,20 @@ def normalize(cfg):
         portfolio_lookup,
         exceptions,
     )
+    nav = _normalize_portfolio_measure(
+        pd.read_csv(raw / "nav_source_d.csv"), "nav", "nav", portfolio_lookup, exceptions
+    )
+    actual_pnl = _normalize_portfolio_measure(
+        pd.read_csv(raw / "pnl_source_e.csv"), "actual_pnl", "actual_pnl",
+        portfolio_lookup, exceptions,
+    )
     exception_frame = pd.DataFrame(exceptions)
 
     positions.to_csv(output / "position_clean.csv", index=False)
     market.to_csv(output / "market_clean.csv", index=False)
     transactions.to_csv(output / "transaction_clean.csv", index=False)
+    nav.to_csv(output / "nav_clean.csv", index=False)
+    actual_pnl.to_csv(output / "actual_pnl_clean.csv", index=False)
     exception_frame.to_csv(output / "dq_exceptions.csv", index=False)
-    return positions, market, transactions, exception_frame
+    return positions, market, transactions, nav, actual_pnl, exception_frame
 

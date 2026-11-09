@@ -4,56 +4,85 @@ from pathlib import Path
 
 from .analytics import calculate
 from .config import settings
-from .etl import normalize
 from .generate_data import generate
 from .reporting import create_report
 
 
-def run(business_date=None, load_db=False):
-    cfg = settings()
-    generated = generate(cfg)
-    if load_db:
-        from .database import (ingest_and_standardize, persist_analytics,
-                               read_run_exceptions, read_standardized)
+class RiskPipeline:
+    """Orchestrate generation, SQL processing, analytics and reporting."""
 
-        engine, run_id, ingested = ingest_and_standardize(cfg, business_date)
-        standardized = read_standardized(engine)
+    def __init__(self, cfg=None, database_client=None):
+        self.cfg = cfg or settings()
+        self.database = database_client
+        self.status = "INITIALIZED"
+        self.business_date = None
+
+    def run(self, business_date=None, load_db=False):
+        """Execute the pipeline and return a run summary dictionary."""
+        self.status = "RUNNING"
+        self.business_date = business_date
+        try:
+            result = self._execute(business_date, load_db)
+            self.status = "SUCCESS"
+            return result
+        except Exception:
+            self.status = "FAILED"
+            raise
+
+    def _execute(self, business_date, load_db):
+        """Run the existing workflow without changing its calculations or outputs."""
+        if not load_db:
+            raise ValueError(
+                "RiskPipeline requires --load-db; SQL is the authoritative "
+                "standardization path. Use src.run_analytics for analytics-only runs."
+            )
+        cfg = self.cfg
+        generated = generate(cfg)
+
+        # 1. Use MySQL as the single authoritative standardization path.
+        from .database import DatabaseClient
+
+        self.database = self.database or DatabaseClient(cfg)
+        standardized = self.database.ingest_and_standardize(business_date)
         positions = standardized["position_daily"]
         market = standardized["market_data_daily"]
         nav = standardized["nav_daily"]
         actual_pnl = standardized["actual_pnl_daily"]
+        transactions = standardized["transaction_daily"]
         output = Path(cfg["root"]) / cfg["paths"]["processed"]
         positions.to_csv(output / "position_clean.csv", index=False)
         market.to_csv(output / "market_clean.csv", index=False)
-        standardized["nav_daily"].to_csv(output / "nav_clean.csv", index=False)
-        standardized["actual_pnl_daily"].to_csv(output / "actual_pnl_clean.csv", index=False)
-        exceptions = read_run_exceptions(engine, run_id)
+        nav.to_csv(output / "nav_clean.csv", index=False)
+        actual_pnl.to_csv(output / "actual_pnl_clean.csv", index=False)
+        exceptions = self.database.read_run_exceptions()
         exceptions.to_csv(output / "dq_exceptions.csv", index=False)
-        frames = calculate(cfg, positions, market, nav, actual_pnl)
-        database_rows = persist_analytics(engine, run_id, frames, ingested)
-    else:
-        positions, market, _, exceptions = normalize(cfg)
-        frames = calculate(cfg)
-        database_rows = None
 
-    report = create_report(cfg, business_date)
+        # 2. Calculate risk, P&L, VaR/backtesting and stress results.
+        frames = calculate(cfg, positions, market, nav, actual_pnl, transactions)
 
-    result = {
-        "synthetic": True,
-        "generated": generated,
-        "clean_positions": len(positions),
-        "clean_market": len(market),
-        "dq_exceptions": len(exceptions),
-        "report": str(report),
-    }
+        # 3. Persist analytics when database mode is enabled.
+        database_rows = self.database.persist_analytics(frames)
 
-    if load_db:
-        result["raw_rows_ingested"] = ingested
+        # 4. Create the final Excel report and return run metadata.
+        report = create_report(cfg, business_date)
+        result = {
+            "synthetic": True,
+            "generated": generated,
+            "clean_positions": len(positions),
+            "clean_market": len(market),
+            "dq_exceptions": len(exceptions),
+            "report": str(report),
+        }
+        result["raw_rows_ingested"] = self.database.ingested_rows
         result["database_analytics_rows_upserted"] = database_rows
-        result["pipeline_run_id"] = run_id
+        result["pipeline_run_id"] = self.database.run_id
+        print(json.dumps(result, indent=2, default=str))
+        return result
 
-    print(json.dumps(result, indent=2, default=str))
-    return result
+
+def run(business_date=None, load_db=False):
+    """Backward-compatible functional entry point for the class-based pipeline."""
+    return RiskPipeline().run(business_date, load_db)
 
 
 def main():
